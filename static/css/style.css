@@ -1404,3 +1404,336 @@ header {
         width: 280px;
     }
 }
+
+/* ============================================
+   v2.0 新增樣式
+   ============================================ */
+
+/* --- 版本徽章 --- */
+.version-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: var(--accent-muted);
+    color: var(--accent);
+    margin-left: 6px;
+    letter-spacing: 0.3px;
+    vertical-align: middle;
+}
+
+/* --- 檔案變更通知列 --- */
+.file-notification {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    background: rgba(210, 153, 34, 0.15);
+    border-bottom: 1px solid rgba(210, 153, 34, 0.4);
+    font-size: 12px;
+    color: var(--warning);
+    flex-shrink: 0;
+    z-index: 50;
+}
+[data-theme="light"] .file-notification {
+    background: rgba(154, 103, 0, 0.08);
+    color: #9a6700;
+    border-color: rgba(154, 103, 0, 0.3);
+}
+.file-notification svg {
+    flex-shrink: 0;
+    color: inherit;
+}
+.file-notification span {
+    flex: 1;
+}
+
+/* --- 匯出下拉選單 --- */
+.btn-with-dropdown {
+    position: relative;
+}
+.export-panel {
+    min-width: 160px;
+    padding: 4px;
+}
+.export-panel .dropdown-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding: 6px 10px 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: none;
+    background: none;
+}
+.export-panel .dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 13px;
+    color: var(--text-primary);
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--transition-fast);
+}
+.export-panel .dropdown-item:hover {
+    background: var(--bg-hover);
+}
+.export-panel .dropdown-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* --- 分割視圖佈局 --- */
+.split-layout {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* --- 編輯器面板 --- */
+.editor-pane {
+    display: flex;
+    flex-direction: column;
+    width: 50%;
+    min-width: 200px;
+    border-right: 1px solid var(--border-primary);
+    background: var(--bg-primary);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    min-height: 34px;
+}
+
+.toolbar-btn {
+    padding: 3px 7px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    line-height: 1.4;
+    font-family: var(--font-main);
+}
+.toolbar-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    border-color: var(--border-primary);
+}
+.toolbar-btn code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.toolbar-sep {
+    width: 1px;
+    height: 16px;
+    background: var(--border-primary);
+    margin: 0 3px;
+    flex-shrink: 0;
+}
+
+.save-status {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition-fast);
+}
+.save-status.unsaved {
+    color: var(--warning);
+}
+.save-status.saving {
+    color: var(--text-secondary);
+}
+.save-status.saved {
+    color: var(--success);
+}
+
+.cm-wrap {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+/* CodeMirror 覆寫 */
+.cm-wrap .CodeMirror {
+    height: 100%;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.65;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: none;
+}
+[data-theme="dark"] .cm-wrap .CodeMirror {
+    background: #0d1117;
+}
+[data-theme="light"] .cm-wrap .CodeMirror {
+    background: #ffffff;
+    color: #1f2328;
+}
+.cm-wrap .CodeMirror-gutters {
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border-primary);
+}
+.cm-wrap .CodeMirror-linenumber {
+    color: var(--text-tertiary);
+    font-size: 11px;
+}
+.cm-wrap .CodeMirror-cursor {
+    border-left-color: var(--accent);
+}
+.cm-wrap .CodeMirror-selected {
+    background: var(--accent-muted) !important;
+}
+.cm-wrap .CodeMirror-focused .CodeMirror-selected {
+    background: rgba(88, 166, 255, 0.2) !important;
+}
+.cm-wrap .CodeMirror-scroll {
+    padding: 8px 0;
+}
+
+/* --- 分割拖拉把手 --- */
+.split-gutter {
+    width: 5px;
+    background: var(--border-primary);
+    cursor: col-resize;
+    flex-shrink: 0;
+    transition: background var(--transition-fast);
+    position: relative;
+}
+.split-gutter:hover,
+.split-gutter.active {
+    background: var(--accent);
+}
+
+/* --- 預覽面板（split模式） --- */
+.split-layout .preview-container {
+    flex: 1;
+    min-width: 0;
+}
+.split-layout.split-active .preview-container {
+    border-left: none;
+}
+
+/* --- 編輯模式按鈕 active 狀態 --- */
+.tab-actions .btn-icon.active {
+    color: var(--accent);
+    background: var(--accent-muted);
+}
+
+/* --- 搜尋面板操作按鈕列 --- */
+.search-panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.btn-text.btn-small {
+    padding: 2px 6px;
+    font-size: 11px;
+    color: var(--accent);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--transition-fast);
+}
+.btn-text.btn-small:hover {
+    background: var(--accent-muted);
+    border-color: var(--accent);
+}
+.btn-text.btn-small:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* --- 索引狀態提示 --- */
+.index-status {
+    padding: 6px 12px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+}
+.index-status.building {
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+}
+.index-status.success {
+    color: var(--success);
+    background: rgba(63, 185, 80, 0.08);
+}
+.index-status.error {
+    color: var(--danger);
+    background: rgba(248, 81, 73, 0.08);
+}
+
+/* --- WebSocket 連線指示燈 --- */
+.ws-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.ws-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    transition: background var(--transition-normal);
+}
+.ws-dot.connected {
+    background: var(--success);
+    box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.2);
+    animation: ws-pulse 3s infinite;
+}
+@keyframes ws-pulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.2); }
+    50% { box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.08); }
+}
+
+/* --- btn.btn-primary.btn-small --- */
+.btn.btn-primary.btn-small {
+    padding: 2px 10px;
+    font-size: 11px;
+    background: var(--accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-weight: 500;
+    transition: background var(--transition-fast);
+}
+.btn.btn-primary.btn-small:hover {
+    background: var(--accent-hover);
+}
+
+/* --- content-area flex column で split-layout を flex:1 に --- */
+.content-area {
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- 搜尋面板を content-area 内でオーバーレイ --- */
+.search-panel {
+    flex-shrink: 0;
+}
