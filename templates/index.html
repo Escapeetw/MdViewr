@@ -131,20 +131,45 @@
 
     <!-- Main Layout -->
     <main class="app-layout">
-        <!-- Sidebar: File Tree -->
+        <!-- Sidebar: File Tree + Tags -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <span class="sidebar-title">檔案總管</span>
+                <div class="sidebar-tabs" id="sidebarTabs">
+                    <button class="sidebar-tab active" id="tabFiles" data-view="files">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        檔案
+                    </button>
+                    <button class="sidebar-tab" id="tabTags" data-view="tags">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+                        標籤
+                    </button>
+                </div>
                 <button id="openFolderBtn" class="btn-icon btn-small" title="開啟資料夾">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
                     </svg>
                 </button>
             </div>
+            <!-- 檔案樹 -->
             <div class="file-tree" id="fileTree">
                 <div class="tree-empty">
                     <p>尚未開啟資料夾</p>
                     <p class="hint">點擊上方按鈕選擇資料夾</p>
+                </div>
+            </div>
+            <!-- 標籤視圖 -->
+            <div class="tags-view" id="tagsView" style="display:none">
+                <div class="tags-hint" id="tagsHint">
+                    <p>建立索引後可使用標籤篩選</p>
+                    <button id="tagsRebuildBtn" class="btn btn-primary btn-small">⚡ 建立索引</button>
+                </div>
+                <div class="tags-list" id="tagsList" style="display:none"></div>
+                <div class="tag-files" id="tagFiles" style="display:none">
+                    <div class="tag-files-header">
+                        <button id="tagFilesBack" class="btn-icon btn-small" title="返回標籤列表">←</button>
+                        <span id="tagFilesTitle"></span>
+                    </div>
+                    <div class="tag-files-list" id="tagFilesList"></div>
                 </div>
             </div>
         </aside>
@@ -250,16 +275,38 @@
         <!-- TOC Sidebar -->
         <aside class="toc-sidebar" id="tocSidebar">
             <div class="sidebar-header">
-                <span class="sidebar-title">文件大綱</span>
-            </div>
-            <div class="toc-search" id="tocSearchBox">
-                <input type="text" id="tocSearchInput" placeholder="篩選大綱…" autocomplete="off">
-            </div>
-            <nav class="toc-nav" id="tocNav">
-                <div class="tree-empty">
-                    <p>尚無大綱</p>
+                <div class="toc-tabs" id="tocTabs">
+                    <button class="toc-tab active" data-view="outline">大綱</button>
+                    <button class="toc-tab" data-view="bookmarks">書籤</button>
                 </div>
-            </nav>
+            </div>
+            <!-- 大綱面板 -->
+            <div id="tocOutlinePanel">
+                <div class="toc-search" id="tocSearchBox">
+                    <input type="text" id="tocSearchInput" placeholder="篩選大綱…" autocomplete="off">
+                </div>
+                <nav class="toc-nav" id="tocNav">
+                    <div class="tree-empty"><p>尚無大綱</p></div>
+                </nav>
+            </div>
+            <!-- 書籤面板 -->
+            <div id="tocBookmarksPanel" style="display:none">
+                <div class="bookmarks-toolbar">
+                    <span class="sidebar-title" style="font-size:11px;padding:8px 12px;display:block;color:var(--text-secondary)">點選段落左側 ◆ 新增書籤</span>
+                </div>
+                <div class="bookmarks-list" id="bookmarksList">
+                    <div class="tree-empty"><p>尚無書籤</p></div>
+                </div>
+            </div>
+            <!-- 反向連結 -->
+            <div class="backlinks-section" id="backlinksSection" style="display:none">
+                <div class="backlinks-header">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+                    反向連結
+                    <span id="backlinksCount" class="backlinks-badge"></span>
+                </div>
+                <div class="backlinks-list" id="backlinksList"></div>
+            </div>
         </aside>
     </main>
 
@@ -329,6 +376,31 @@
         </div>
         <div class="dropdown-list" id="recentList"></div>
     </div>
+
+    <!-- Command Palette -->
+    <div class="modal-overlay palette-overlay" id="commandPalette" style="display:none">
+        <div class="palette-modal">
+            <div class="palette-input-row">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="paletteInput" placeholder="搜尋命令或檔案…" autocomplete="off">
+                <kbd>Esc</kbd>
+            </div>
+            <div class="palette-results" id="paletteResults"></div>
+            <div class="palette-footer">
+                <span><kbd>↑↓</kbd> 導覽</span>
+                <span><kbd>Enter</kbd> 執行</span>
+                <span><kbd>Esc</kbd> 關閉</span>
+                <span><kbd>Ctrl+Shift+P</kbd> 開啟</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Frontmatter 元資料列（預覽頂部） -->
+    <template id="frontmatterBarTpl">
+        <div class="frontmatter-bar" id="frontmatterBar"></div>
+    </template>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
