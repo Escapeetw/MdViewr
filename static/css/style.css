@@ -1409,6 +1409,22 @@ header {
    v2.0 新增樣式
    ============================================ */
 
+/* --- 公司 Logo --- */
+.company-logo {
+    height: 28px;
+    width: auto;
+    object-fit: contain;
+    display: block;
+}
+
+.logo-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--border-primary);
+    margin: 0 10px;
+    flex-shrink: 0;
+}
+
 /* --- 版本徽章 --- */
 .version-badge {
     font-size: 10px;

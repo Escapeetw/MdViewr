@@ -124,6 +124,38 @@ def scan_tree(directory):
     return tree
 
 
+# === Frontmatter 解析 ===
+def parse_frontmatter(content):
+    """解析 YAML frontmatter，回傳 (metadata_dict, content_without_frontmatter)"""
+    fm = {}
+    stripped = content
+    m = re.match(r'^---\s*\n(.*?)\n---\s*\n?', content, re.DOTALL)
+    if m:
+        raw = m.group(1)
+        stripped = content[m.end():]
+        # 解析 title, date, tags 等常見欄位
+        for line in raw.splitlines():
+            kv = re.match(r'^(\w+)\s*:\s*(.*)', line)
+            if kv:
+                key, val = kv.group(1).lower(), kv.group(2).strip()
+                if key == 'tags':
+                    # 支援 tags: [a, b] 或 tags: a, b
+                    val = val.strip('[]')
+                    fm['tags'] = [t.strip().strip('"\'') for t in val.split(',') if t.strip()]
+                else:
+                    fm[key] = val.strip('"\'')
+            # 支援 YAML list 格式:  - tag
+            elif line.startswith('  - ') and 'tags' in fm:
+                fm['tags'].append(line[4:].strip().strip('"\''))
+    return fm, stripped
+
+
+def extract_tags_from_content(content):
+    """從 Markdown 內容提取 frontmatter tags"""
+    fm, _ = parse_frontmatter(content)
+    return fm.get('tags', [])
+
+
 # === SQLite FTS5 全文索引 ===
 def _init_index_db():
     conn = sqlite3.connect(INDEX_DB)
@@ -132,6 +164,21 @@ def _init_index_db():
         tokenize="unicode61 remove_diacritics 1"
     )''')
     conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS file_tags (
+        path TEXT NOT NULL,
+        tag  TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (path, tag)
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS bookmarks (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        path      TEXT NOT NULL,
+        para_idx  INTEGER NOT NULL,
+        text      TEXT NOT NULL,
+        note      TEXT DEFAULT '',
+        color     TEXT DEFAULT 'yellow',
+        created   TEXT NOT NULL
+    )''')
     conn.commit()
     return conn
 
@@ -139,6 +186,7 @@ def _init_index_db():
 def rebuild_index(root):
     conn = _init_index_db()
     conn.execute('DELETE FROM docs')
+    conn.execute('DELETE FROM file_tags WHERE path LIKE ?', (os.path.abspath(root).replace('\\', '/') + '%',))
     conn.execute('INSERT OR REPLACE INTO meta VALUES ("root", ?)', (os.path.abspath(root).replace('\\', '/'),))
     count = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -150,8 +198,11 @@ def rebuild_index(root):
                 try:
                     with open(fpath, 'r', encoding='utf-8') as f:
                         content = f.read()
-                    conn.execute('INSERT INTO docs VALUES (?, ?, ?)',
-                                 (fpath.replace('\\', '/'), fname, content))
+                    fpath_norm = fpath.replace('\\', '/')
+                    conn.execute('INSERT INTO docs VALUES (?, ?, ?)', (fpath_norm, fname, content))
+                    for tag in extract_tags_from_content(content):
+                        conn.execute('INSERT OR IGNORE INTO file_tags VALUES (?, ?, ?)',
+                                     (fpath_norm, tag, fname))
                     count += 1
                 except Exception:
                     pass
@@ -412,16 +463,17 @@ def api_file():
         return jsonify({'error': '檔案不存在'}), 400
     try:
         with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
+            raw = f.read()
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    fm, content = parse_frontmatter(raw)
     stat = os.stat(path)
     mod_time = datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
     lines = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
     word_count = len(content) - content.count('\n') - content.count('\r') - content.count(' ')
     return jsonify({'content': content, 'wordCount': word_count,
                     'lineCount': lines, 'modifiedTime': mod_time,
-                    'fileName': os.path.basename(path)})
+                    'fileName': os.path.basename(path), 'frontmatter': fm})
 
 
 @app.route('/api/file/save', methods=['POST'])
@@ -566,6 +618,173 @@ if WEBSOCKET_OK:
         finally:
             with _ws_lock:
                 _ws_clients.discard(ws)
+
+
+# === Tags API ===
+@app.route('/api/tags')
+def api_tags():
+    """取得所有標籤及其檔案數量"""
+    root = request.args.get('root', DEFAULT_ROOT)
+    try:
+        conn = _init_index_db()
+        root_prefix = os.path.abspath(root).replace('\\', '/') + '/'
+        rows = conn.execute(
+            'SELECT tag, COUNT(*) as cnt FROM file_tags WHERE path LIKE ? GROUP BY tag ORDER BY cnt DESC',
+            (root_prefix + '%',)
+        ).fetchall()
+        conn.close()
+        return jsonify({'tags': [{'tag': r[0], 'count': r[1]} for r in rows]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tags/files')
+def api_tags_files():
+    """取得特定標籤的所有檔案"""
+    root = request.args.get('root', DEFAULT_ROOT)
+    tag = request.args.get('tag', '').strip()
+    if not tag:
+        return jsonify({'files': []})
+    try:
+        conn = _init_index_db()
+        root_prefix = os.path.abspath(root).replace('\\', '/') + '/'
+        rows = conn.execute(
+            'SELECT path, name FROM file_tags WHERE tag = ? AND path LIKE ?',
+            (tag, root_prefix + '%')
+        ).fetchall()
+        conn.close()
+        return jsonify({'files': [{'path': r[0], 'name': r[1]} for r in rows]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# === Wiki-links API ===
+@app.route('/api/resolve')
+def api_resolve():
+    """依名稱尋找 .md 檔案路徑"""
+    root = request.args.get('root', DEFAULT_ROOT)
+    name = request.args.get('name', '').strip()
+    if not name or not root:
+        return jsonify({'error': '缺少參數'}), 400
+    name_lower = name.lower()
+    if not name_lower.endswith('.md'):
+        name_lower += '.md'
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')
+                       and d not in ('node_modules', '__pycache__', '.git', '.venv', 'venv')]
+        for fname in filenames:
+            if fname.lower() == name_lower:
+                fpath = os.path.join(dirpath, fname).replace('\\', '/')
+                return jsonify({'path': fpath, 'name': fname})
+    return jsonify({'error': '找不到檔案'}), 404
+
+
+@app.route('/api/wikilinks')
+def api_wikilinks():
+    """找出哪些檔案含有指向 filename 的 [[wiki-link]]"""
+    root = request.args.get('root', DEFAULT_ROOT)
+    filename = request.args.get('filename', '').strip()
+    if not filename:
+        return jsonify({'backlinks': []})
+    # 去除副檔名做為搜尋目標
+    stem = re.sub(r'\.md$', '', filename, flags=re.IGNORECASE)
+    pattern = re.compile(r'\[\[' + re.escape(stem) + r'(?:\.md)?\]\]', re.IGNORECASE)
+    backlinks = []
+    for dirpath, dirnames, filenames_list in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')
+                       and d not in ('node_modules', '__pycache__', '.git', '.venv', 'venv')]
+        for fname in filenames_list:
+            if fname.lower().endswith('.md'):
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    m = pattern.search(content)
+                    if m:
+                        start = max(0, m.start() - 60)
+                        end = min(len(content), m.end() + 60)
+                        excerpt = content[start:end].replace('\n', ' ')
+                        backlinks.append({'path': fpath.replace('\\', '/'),
+                                          'name': fname, 'excerpt': excerpt})
+                except Exception:
+                    pass
+    return jsonify({'backlinks': backlinks})
+
+
+# === Bookmarks API ===
+@app.route('/api/bookmarks', methods=['GET'])
+def api_bookmarks_get():
+    path = request.args.get('path', '')
+    if not path:
+        return jsonify({'bookmarks': []})
+    try:
+        conn = _init_index_db()
+        rows = conn.execute(
+            'SELECT id, para_idx, text, note, color, created FROM bookmarks WHERE path = ? ORDER BY para_idx',
+            (path,)
+        ).fetchall()
+        conn.close()
+        return jsonify({'bookmarks': [
+            {'id': r[0], 'paraIdx': r[1], 'text': r[2], 'note': r[3], 'color': r[4], 'created': r[5]}
+            for r in rows
+        ]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/bookmarks', methods=['POST'])
+def api_bookmarks_post():
+    data = request.get_json() or {}
+    path = data.get('path', '')
+    para_idx = data.get('paraIdx', 0)
+    text = data.get('text', '')[:200]
+    note = data.get('note', '')
+    color = data.get('color', 'yellow')
+    if not path:
+        return jsonify({'error': '缺少路徑'}), 400
+    try:
+        conn = _init_index_db()
+        created = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cur = conn.execute(
+            'INSERT INTO bookmarks (path, para_idx, text, note, color, created) VALUES (?,?,?,?,?,?)',
+            (path, para_idx, text, note, color, created)
+        )
+        conn.commit()
+        bm_id = cur.lastrowid
+        conn.close()
+        return jsonify({'id': bm_id, 'created': created})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/bookmarks/<int:bm_id>', methods=['DELETE'])
+def api_bookmarks_delete(bm_id):
+    try:
+        conn = _init_index_db()
+        conn.execute('DELETE FROM bookmarks WHERE id = ?', (bm_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/bookmarks/<int:bm_id>', methods=['PATCH'])
+def api_bookmarks_patch(bm_id):
+    data = request.get_json() or {}
+    note = data.get('note', '')
+    color = data.get('color', None)
+    try:
+        conn = _init_index_db()
+        if color:
+            conn.execute('UPDATE bookmarks SET note = ?, color = ? WHERE id = ?', (note, color, bm_id))
+        else:
+            conn.execute('UPDATE bookmarks SET note = ? WHERE id = ?', (note, bm_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

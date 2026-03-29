@@ -499,6 +499,7 @@
             fileTree.innerHTML = '';
             renderTreeNodes(data.tree, fileTree, 0);
             saveSettings();
+            if (typeof refreshAllFiles === 'function') setTimeout(refreshAllFiles, 100);
         } catch (err) {
             fileTree.innerHTML = `<div class="tree-empty"><p>載入失敗: ${escapeHtml(err.message)}</p></div>`;
         }
@@ -578,6 +579,7 @@
                 wordCount: data.wordCount,
                 lineCount: data.lineCount,
                 modifiedTime: data.modifiedTime,
+                frontmatter: data.frontmatter || {},
             };
 
             tabs.push(tab);
@@ -598,6 +600,7 @@
         searchPanel.style.display = 'none';
         renderMarkdown(tab.content);
         updateStatusBar(tab);
+        if (typeof renderFrontmatterBar === 'function') renderFrontmatterBar(tab.frontmatter || {});
 
         $$('.tree-item.active').forEach(el => el.classList.remove('active'));
         const treeItem = $(`.tree-item[data-path="${CSS.escape(tab.path)}"]`);
@@ -694,7 +697,8 @@
         markdownBody.style.display = '';
 
         headingCounter = 0;
-        markdownBody.innerHTML = marked.parse(content);
+        const processedContent = (typeof preprocessWikilinks === 'function') ? preprocessWikilinks(content) : content;
+        markdownBody.innerHTML = marked.parse(processedContent);
 
         // Render Mermaid diagrams
         await renderMermaidBlocks();
@@ -1649,5 +1653,433 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); c
 
     // Post-init: connect WebSocket
     connectWebSocket();
+
+    // ========================
+    //  Flat file list (for Command Palette & wiki-link resolve)
+    // ========================
+    let allFiles = [];
+    function refreshAllFiles() {
+        const folder = (typeof currentRoot !== 'undefined' && currentRoot) || '';
+        if (!folder) return;
+        fetch('/api/tree?root=' + encodeURIComponent(folder))
+            .then(r => r.json())
+            .then(data => {
+                allFiles = [];
+                function walk(nodes) {
+                    nodes.forEach(n => {
+                        if (n.type === 'file') allFiles.push({ name: n.name, path: n.path });
+                        if (n.children) walk(n.children);
+                    });
+                }
+                if (data.tree) walk(data.tree);
+            })
+            .catch(() => {});
+    }
+
+    // ========================
+    //  Wiki-link preprocessing  [[name]] → <a class="wiki-link">
+    // ========================
+    function preprocessWikilinks(md) {
+        return md.replace(/\[\[([^\]]+)\]\]/g, (_, name) => {
+            const slug = name.trim();
+            const found = allFiles.find(f => f.name === slug + '.md' || f.name === slug);
+            if (found) {
+                return `[${slug}](wikilink:${encodeURIComponent(found.path)})`;
+            }
+            return `[${slug}](wikilink-unresolved:${encodeURIComponent(slug)})`;
+        });
+    }
+
+    // Override marked renderer for wiki-links
+    const _markedRenderer = new marked.Renderer();
+    const _origLinkRenderer = _markedRenderer.link.bind(_markedRenderer);
+    _markedRenderer.link = function(href, title, text) {
+        if (href && href.startsWith('wikilink-unresolved:')) {
+            const name = decodeURIComponent(href.replace('wikilink-unresolved:', ''));
+            return `<a class="wiki-link unresolved" title="找不到: ${name}">${text}</a>`;
+        }
+        if (href && href.startsWith('wikilink:')) {
+            const path = decodeURIComponent(href.replace('wikilink:', ''));
+            return `<a class="wiki-link" href="#" data-wiki-path="${path}" onclick="event.preventDefault();window._wikiNav('${path}')">${text}</a>`;
+        }
+        return _origLinkRenderer(href, title, text);
+    };
+    marked.setOptions({ renderer: _markedRenderer });
+    window._wikiNav = function(path) { fetchFile(path); };
+
+    // ========================
+    //  Frontmatter bar
+    // ========================
+    function renderFrontmatterBar(fm) {
+        let bar = document.getElementById('frontmatterBar');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'frontmatterBar';
+            bar.className = 'frontmatter-bar';
+            const previewContainer = document.getElementById('previewContainer');
+            if (previewContainer) previewContainer.insertBefore(bar, previewContainer.firstChild);
+        }
+        if (!fm || Object.keys(fm).length === 0) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+        bar.style.display = '';
+        const tags = fm.tags || [];
+        const title = fm.title ? `<span class="fm-title">${fm.title}</span>` : '';
+        const tagsHtml = tags.map(t => `<span class="fm-tag" onclick="showTagFilesFromBar('${t}')">#${t}</span>`).join('');
+        const extra = Object.entries(fm).filter(([k]) => !['title','tags'].includes(k))
+            .map(([k,v]) => `<span class="fm-meta"><b>${k}:</b> ${v}</span>`).join('');
+        bar.innerHTML = title + tagsHtml + extra;
+    }
+    window.showTagFilesFromBar = function(tag) {
+        const leftTab = document.querySelector('.sidebar-tab[data-view="tags"]');
+        if (leftTab) leftTab.click();
+        setTimeout(() => showTagFiles(tag), 100);
+    };
+
+    // Override fetchFile to handle frontmatter
+    const _origFetchFile = fetchFile;
+    window.fetchFile = fetchFile;  // already global via IIFE scope? patch via event
+
+    // ========================
+    //  Backlinks
+    // ========================
+    function fetchBacklinks(path) {
+        const panel = document.getElementById('backlinksList');
+        const section = document.getElementById('backlinksSection');
+        if (!panel || !section) return;
+        fetch('/api/wikilinks?target=' + encodeURIComponent(path))
+            .then(r => r.json())
+            .then(data => {
+                const links = data.links || [];
+                const countEl = document.getElementById('backlinksCount');
+                if (countEl) countEl.textContent = links.length;
+                section.style.display = links.length > 0 ? '' : 'none';
+                if (links.length === 0) { panel.innerHTML = ''; return; }
+                panel.innerHTML = links.map(l =>
+                    `<div class="backlinks-item" onclick="fetchFile('${l.path}')" title="${l.path}">
+                        <span class="backlinks-name">${l.name}</span>
+                    </div>`
+                ).join('');
+            })
+            .catch(() => { if (panel) panel.innerHTML = ''; });
+    }
+
+    // ========================
+    //  TOC sidebar tab switching
+    // ========================
+    document.querySelectorAll('.toc-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.toc-tab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const view = btn.dataset.view;
+            const outlinePanel = document.getElementById('tocOutlinePanel');
+            const bookmarksPanel = document.getElementById('tocBookmarksPanel');
+            if (outlinePanel) outlinePanel.style.display = view === 'outline' ? '' : 'none';
+            if (bookmarksPanel) bookmarksPanel.style.display = view === 'bookmarks' ? '' : 'none';
+        });
+    });
+
+    // ========================
+    //  Bookmarks
+    // ========================
+    function fetchBookmarks(path) {
+        const list = document.getElementById('bookmarksList');
+        if (!list) return;
+        fetch('/api/bookmarks?path=' + encodeURIComponent(path))
+            .then(r => r.json())
+            .then(data => {
+                const bms = data.bookmarks || [];
+                renderBookmarksSidebar(bms);
+                applyBookmarkHighlights(bms);
+            })
+            .catch(() => {});
+    }
+
+    function renderBookmarksSidebar(bms) {
+        const list = document.getElementById('bookmarksList');
+        if (!list) return;
+        if (bms.length === 0) { list.innerHTML = '<div class="no-bookmarks">尚無書籤</div>'; return; }
+        list.innerHTML = bms.map(b =>
+            `<div class="bookmark-item" style="border-left:3px solid ${b.color || 'gold'}" data-id="${b.id}">
+                <div class="bookmark-text" onclick="scrollToBookmark(${b.para_idx})">${b.text.substring(0,60)}${b.text.length>60?'…':''}</div>
+                ${b.note ? `<div class="bookmark-note">${b.note}</div>` : ''}
+                <button class="bookmark-del" onclick="deleteBookmark(${b.id})">✕</button>
+            </div>`
+        ).join('');
+    }
+
+    function applyBookmarkHighlights(bms) {
+        document.querySelectorAll('.bookmarkable').forEach(el => el.classList.remove('bookmark-highlighted'));
+        bms.forEach(b => {
+            const el = document.querySelector(`.bookmarkable[data-para="${b.para_idx}"]`);
+            if (el) el.classList.add('bookmark-highlighted');
+        });
+    }
+
+    function setupBookmarkGutters() {
+        const preview = document.getElementById('markdownBody');
+        if (!preview) return;
+        const paras = preview.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote');
+        paras.forEach((el, i) => {
+            el.classList.add('bookmarkable');
+            el.dataset.para = i;
+            el.addEventListener('mouseenter', function() {
+                if (!this.querySelector('.bookmark-gutter')) {
+                    const btn = document.createElement('span');
+                    btn.className = 'bookmark-gutter';
+                    btn.title = '新增書籤';
+                    btn.textContent = '🔖';
+                    btn.onclick = (e) => { e.stopPropagation(); toggleBookmark(i, this.textContent.trim()); };
+                    this.prepend(btn);
+                }
+            });
+            el.addEventListener('mouseleave', function() {
+                const btn = this.querySelector('.bookmark-gutter');
+                if (btn) btn.remove();
+            });
+        });
+    }
+
+    window.scrollToBookmark = function(paraIdx) {
+        const el = document.querySelector(`.bookmarkable[data-para="${paraIdx}"]`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+
+    window.deleteBookmark = function(id) {
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (!tab) return;
+        fetch('/api/bookmarks/' + id, { method: 'DELETE' })
+            .then(() => fetchBookmarks(tab.path));
+    };
+
+    function toggleBookmark(paraIdx, text) {
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (!tab) return;
+        fetch('/api/bookmarks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: tab.path, para_idx: paraIdx, text: text.substring(0, 200), color: 'gold' })
+        }).then(() => fetchBookmarks(tab.path));
+    }
+
+    // Hook into tab activation to load backlinks & bookmarks
+    const _origActivateTabFn = window._activateTab;
+    document.addEventListener('tab-activated', function(e) {
+        const path = e.detail && e.detail.path;
+        if (path) {
+            fetchBacklinks(path);
+            fetchBookmarks(path);
+            refreshAllFiles();
+        }
+    });
+
+    // ========================
+    //  Left sidebar tab switching (Files / Tags)
+    // ========================
+    document.querySelectorAll('.sidebar-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const view = btn.dataset.view;
+            const filesView = document.getElementById('fileTree');
+            const tagsView = document.getElementById('tagsView');
+            if (filesView) filesView.style.display = view === 'files' ? '' : 'none';
+            if (tagsView) tagsView.style.display = view === 'tags' ? '' : 'none';
+            if (view === 'tags') loadTagsView();
+        });
+    });
+
+    function loadTagsView() {
+        const tagsList = document.getElementById('tagsList');
+        if (!tagsList) return;
+        fetch('/api/tags')
+            .then(r => r.json())
+            .then(data => {
+                const tags = data.tags || [];
+                const hint = document.getElementById('tagsHint');
+                if (tags.length === 0) {
+                    if (hint) hint.style.display = '';
+                    tagsList.style.display = 'none';
+                    return;
+                }
+                if (hint) hint.style.display = 'none';
+                tagsList.style.display = '';
+                tagsList.innerHTML = tags.map(t =>
+                    `<span class="tag-chip" onclick="showTagFiles('${t.tag}')">#${t.tag} <sup>${t.count}</sup></span>`
+                ).join('');
+            })
+            .catch(() => { if (tagsList) tagsList.innerHTML = '載入失敗'; });
+    }
+
+    window.showTagFiles = function(tag) {
+        const header = document.getElementById('tagFilesTitle');
+        const list = document.getElementById('tagFilesList');
+        if (!list) return;
+        if (header) header.textContent = '#' + tag;
+        fetch('/api/tags/files?tag=' + encodeURIComponent(tag))
+            .then(r => r.json())
+            .then(data => {
+                const files = data.files || [];
+                list.innerHTML = files.map(f =>
+                    `<div class="tag-file-item" onclick="fetchFile('${f.path}')" title="${f.path}">${f.name}</div>`
+                ).join('');
+                const tagFiles = document.getElementById('tagFiles');
+                if (tagFiles) tagFiles.style.display = '';
+            })
+            .catch(() => {});
+    };
+
+    // ========================
+    //  Command Palette  (Ctrl+Shift+P)
+    // ========================
+    const COMMANDS = [
+        { label: '新增標籤頁', icon: '＋', action: () => document.getElementById('newTabBtn') && document.getElementById('newTabBtn').click() },
+        { label: '關閉目前標籤頁', icon: '✕', action: () => { if (activeTabId) closeTab(activeTabId); } },
+        { label: '切換編輯模式', icon: '✏️', action: () => document.getElementById('editModeBtn') && document.getElementById('editModeBtn').click() },
+        { label: '建立/重建索引', icon: '⚡', action: () => document.getElementById('rebuildIndexBtn') && document.getElementById('rebuildIndexBtn').click() },
+        { label: '匯出 PDF', icon: '📄', action: () => { const tab = tabs.find(t=>t.id===activeTabId); if(tab) window.open('/api/export/pdf?path='+encodeURIComponent(tab.path)); } },
+        { label: '匯出 HTML', icon: '🌐', action: () => { const tab = tabs.find(t=>t.id===activeTabId); if(tab) window.open('/api/export/html?path='+encodeURIComponent(tab.path)); } },
+        { label: '匯出 DOCX', icon: '📝', action: () => { const tab = tabs.find(t=>t.id===activeTabId); if(tab) window.open('/api/export/docx?path='+encodeURIComponent(tab.path)); } },
+        { label: '顯示標籤', icon: '🏷️', action: () => document.querySelector('.sidebar-tab[data-view="tags"]') && document.querySelector('.sidebar-tab[data-view="tags"]').click() },
+        { label: '顯示書籤', icon: '🔖', action: () => document.querySelector('.toc-tab[data-view="bookmarks"]') && document.querySelector('.toc-tab[data-view="bookmarks"]').click() },
+    ];
+
+    let paletteSelectedIdx = 0;
+    let paletteFiltered = [];
+
+    function openPalette() {
+        const overlay = document.getElementById('commandPalette');
+        const input = document.getElementById('paletteInput');
+        if (!overlay || !input) return;
+        overlay.style.display = 'flex';
+        input.value = '';
+        renderPalette('');
+        input.focus();
+    }
+
+    function closePalette() {
+        const overlay = document.getElementById('commandPalette');
+        if (overlay) overlay.style.display = 'none';
+    }
+
+    function fuzzyMatch(query, str) {
+        query = query.toLowerCase();
+        str = str.toLowerCase();
+        let qi = 0;
+        const positions = [];
+        for (let i = 0; i < str.length && qi < query.length; i++) {
+            if (str[i] === query[qi]) { positions.push(i); qi++; }
+        }
+        return qi === query.length ? positions : null;
+    }
+
+    function highlightFuzzy(str, positions) {
+        if (!positions || positions.length === 0) return str;
+        let result = '';
+        for (let i = 0; i < str.length; i++) {
+            if (positions.includes(i)) result += `<mark>${str[i]}</mark>`;
+            else result += str[i];
+        }
+        return result;
+    }
+
+    function renderPalette(query) {
+        const resultsEl = document.getElementById('paletteResults');
+        if (!resultsEl) return;
+        let items = [];
+        if (query.trim() === '') {
+            items = COMMANDS.map(c => ({ ...c, positions: null }));
+            allFiles.slice(0, 20).forEach(f => items.push({
+                label: f.name, icon: '📄', action: () => fetchFile(f.path), positions: null
+            }));
+        } else {
+            COMMANDS.forEach(c => {
+                const pos = fuzzyMatch(query, c.label);
+                if (pos) items.push({ ...c, positions: pos });
+            });
+            allFiles.forEach(f => {
+                const pos = fuzzyMatch(query, f.name);
+                if (pos) items.push({ label: f.name, icon: '📄', action: () => fetchFile(f.path), positions: pos });
+            });
+        }
+        paletteFiltered = items;
+        paletteSelectedIdx = 0;
+        resultsEl.innerHTML = items.slice(0, 30).map((item, i) =>
+            `<div class="palette-item ${i === 0 ? 'selected' : ''}" data-idx="${i}">
+                <span class="palette-icon">${item.icon || '▸'}</span>
+                <span class="palette-label">${highlightFuzzy(item.label, item.positions)}</span>
+            </div>`
+        ).join('');
+        resultsEl.querySelectorAll('.palette-item').forEach(el => {
+            el.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                const idx = parseInt(el.dataset.idx);
+                if (paletteFiltered[idx]) { paletteFiltered[idx].action(); closePalette(); }
+            });
+            el.addEventListener('mouseover', () => {
+                resultsEl.querySelectorAll('.palette-item').forEach(x => x.classList.remove('selected'));
+                el.classList.add('selected');
+                paletteSelectedIdx = parseInt(el.dataset.idx);
+            });
+        });
+    }
+
+    const paletteOverlay = document.getElementById('commandPalette');
+    const paletteInput = document.getElementById('paletteInput');
+    if (paletteOverlay) {
+        paletteOverlay.addEventListener('click', (e) => { if (e.target === paletteOverlay) closePalette(); });
+    }
+    if (paletteInput) {
+        paletteInput.addEventListener('input', () => renderPalette(paletteInput.value));
+        paletteInput.addEventListener('keydown', (e) => {
+            const resultsEl = document.getElementById('paletteResults');
+            const items = resultsEl ? resultsEl.querySelectorAll('.palette-item') : [];
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                paletteSelectedIdx = Math.min(paletteSelectedIdx + 1, paletteFiltered.length - 1);
+                items.forEach((el, i) => el.classList.toggle('selected', i === paletteSelectedIdx));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                paletteSelectedIdx = Math.max(paletteSelectedIdx - 1, 0);
+                items.forEach((el, i) => el.classList.toggle('selected', i === paletteSelectedIdx));
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (paletteFiltered[paletteSelectedIdx]) { paletteFiltered[paletteSelectedIdx].action(); closePalette(); }
+            } else if (e.key === 'Escape') {
+                closePalette();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
+            e.preventDefault();
+            openPalette();
+        }
+    });
+
+    // ========================
+    //  Patch fetchFile to setup gutters & frontmatter after render
+    // ========================
+    const _origFetchFileLocal = fetchFile;
+    const _patchedFetchFile = function(path) {
+        return Promise.resolve(_origFetchFileLocal(path)).then(() => {
+            // fetchFile is async; hook via MutationObserver on preview
+        });
+    };
+
+    const _previewEl = document.getElementById('markdownBody');
+    if (_previewEl) {
+        const _obs = new MutationObserver(() => {
+            setupBookmarkGutters();
+            const tab = tabs.find(t => t.id === activeTabId);
+            if (tab) {
+                fetchBacklinks(tab.path);
+                fetchBookmarks(tab.path);
+            }
+        });
+        _obs.observe(_previewEl, { childList: true, subtree: false });
+    }
+
+    // Initial file list refresh
+    setTimeout(refreshAllFiles, 500);
 
 })();
