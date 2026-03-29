@@ -206,6 +206,8 @@
 
     function setTheme(theme) {
         document.documentElement.setAttribute('data-theme', theme);
+        // v2: 同步 CodeMirror 主題
+        if (typeof setEditorTheme === 'function') setEditorTheme(theme);
         if (theme === 'dark') {
             themeIconDark.style.display = '';
             themeIconLight.style.display = 'none';
@@ -603,6 +605,12 @@
 
         renderTabs();
         saveSettings();
+
+        // v2: 更新編輯器按鈕 + 同步編輯器內容
+        if (typeof updateEditModeBtn === 'function') updateEditModeBtn();
+        if (typeof isEditMode !== 'undefined' && isEditMode && typeof cmEditor !== 'undefined' && cmEditor) {
+            if (typeof loadEditorContent === 'function') loadEditorContent(tab.content);
+        }
     }
 
     function closeTab(tabId) {
@@ -624,6 +632,8 @@
 
         renderTabs();
         saveSettings();
+        // v2: 更新編輯器按鈕
+        if (typeof updateEditModeBtn === 'function') updateEditModeBtn();
     }
 
     function closeAllTabs() {
@@ -633,6 +643,9 @@
         clearStatusBar();
         renderTabs();
         saveSettings();
+        // v2: 退出編輯模式
+        if (typeof exitEditMode === 'function') exitEditMode();
+        if (typeof updateEditModeBtn === 'function') updateEditModeBtn();
     }
 
     closeAllTabsBtn.addEventListener('click', closeAllTabs);
@@ -1045,6 +1058,596 @@
         setInterval(saveSettings, 30000);
     }
 
+    // ========================
+    //  Split Layout & Editor (CodeMirror)
+    // ========================
+    const splitLayout = $('#splitLayout');
+    const editorPane = $('#editorPane');
+    const splitGutter = $('#splitGutter');
+    const cmWrap = $('#cmWrap');
+    const editModeBtn = $('#editModeBtn');
+    const editModeIconView = $('#editModeIconView');
+    const editModeIconEdit = $('#editModeIconEdit');
+    const saveStatusEl = $('#saveStatus');
+
+    let isEditMode = false;
+    let cmEditor = null;       // CodeMirror instance (shared, reused per tab)
+    let saveDebounce = null;
+    let editorPaneWidth = 50;  // percent
+
+    function initEditor() {
+        if (cmEditor) return;
+        const theme = document.documentElement.getAttribute('data-theme');
+        cmEditor = CodeMirror(cmWrap, {
+            mode: 'markdown',
+            theme: theme === 'dark' ? 'material-darker' : 'eclipse',
+            lineNumbers: true,
+            lineWrapping: true,
+            autofocus: false,
+            tabSize: 2,
+            indentWithTabs: false,
+            extraKeys: {
+                'Enter': 'newlineAndIndentContinueMarkdownList',
+                'Ctrl-S': () => saveCurrentFile(),
+                'Ctrl-B': () => insertWrap('**', '**', '粗體文字'),
+                'Ctrl-I': () => insertWrap('*', '*', '斜體文字'),
+            },
+            placeholder: '開始輸入 Markdown…',
+        });
+
+        // 即時預覽：內容變更時重新渲染
+        cmEditor.on('change', () => {
+            const tab = tabs.find(t => t.id === activeTabId);
+            if (!tab) return;
+            const newContent = cmEditor.getValue();
+            tab.content = newContent;
+            tab.isDirty = true;
+            setSaveStatus('unsaved');
+
+            // Debounce preview update
+            clearTimeout(saveDebounce);
+            saveDebounce = setTimeout(() => {
+                renderMarkdown(newContent);
+            }, 300);
+        });
+    }
+
+    function setEditorTheme(theme) {
+        if (!cmEditor) return;
+        cmEditor.setOption('theme', theme === 'dark' ? 'material-darker' : 'eclipse');
+    }
+
+    function loadEditorContent(content) {
+        if (!cmEditor) return;
+        cmEditor.setValue(content || '');
+        cmEditor.clearHistory();
+        setSaveStatus('');
+    }
+
+    function setSaveStatus(state) {
+        if (!saveStatusEl) return;
+        if (state === 'unsaved') {
+            saveStatusEl.textContent = '● 未儲存';
+            saveStatusEl.className = 'save-status unsaved';
+        } else if (state === 'saving') {
+            saveStatusEl.textContent = '儲存中…';
+            saveStatusEl.className = 'save-status saving';
+        } else if (state === 'saved') {
+            saveStatusEl.textContent = '✓ 已儲存';
+            saveStatusEl.className = 'save-status saved';
+            setTimeout(() => setSaveStatus(''), 2500);
+        } else {
+            saveStatusEl.textContent = '';
+            saveStatusEl.className = 'save-status';
+        }
+    }
+
+    function enterEditMode() {
+        if (isEditMode) return;
+        initEditor();
+        isEditMode = true;
+        editorPane.style.display = 'flex';
+        splitGutter.style.display = '';
+        splitLayout.classList.add('split-active');
+        editModeIconView.style.display = 'none';
+        editModeIconEdit.style.display = '';
+        editModeBtn.classList.add('active');
+
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (tab) {
+            loadEditorContent(tab.content);
+            setTimeout(() => cmEditor.refresh(), 50);
+        }
+    }
+
+    function exitEditMode() {
+        if (!isEditMode) return;
+        isEditMode = false;
+        editorPane.style.display = 'none';
+        splitGutter.style.display = 'none';
+        splitLayout.classList.remove('split-active');
+        editModeIconView.style.display = '';
+        editModeIconEdit.style.display = 'none';
+        editModeBtn.classList.remove('active');
+    }
+
+    editModeBtn.addEventListener('click', () => {
+        if (isEditMode) exitEditMode();
+        else enterEditMode();
+    });
+
+    // Ctrl+E 切換編輯模式
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
+            if (activeTabId) {
+                e.preventDefault();
+                if (isEditMode) exitEditMode();
+                else enterEditMode();
+            }
+        }
+    });
+
+    // 工具列按鈕
+    const editorToolbarEl = $('#editorToolbar');
+    if (editorToolbarEl) {
+        editorToolbarEl.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn || !cmEditor) return;
+            const action = btn.dataset.action;
+            const actions = {
+                bold:      () => insertWrap('**', '**', '粗體文字'),
+                italic:    () => insertWrap('*', '*', '斜體文字'),
+                code:      () => insertWrap('`', '`', '程式碼'),
+                h1:        () => insertLinePrefix('# '),
+                h2:        () => insertLinePrefix('## '),
+                h3:        () => insertLinePrefix('### '),
+                ul:        () => insertLinePrefix('- '),
+                ol:        () => insertLinePrefix('1. '),
+                quote:     () => insertLinePrefix('> '),
+                link:      () => insertTemplate('[連結文字](https://)'),
+                codeblock: () => insertTemplate('```\n程式碼\n```'),
+            };
+            if (actions[action]) actions[action]();
+        });
+    }
+
+    function insertWrap(before, after, placeholder) {
+        if (!cmEditor) return;
+        const sel = cmEditor.getSelection();
+        cmEditor.replaceSelection(before + (sel || placeholder) + after);
+        cmEditor.focus();
+    }
+
+    function insertLinePrefix(prefix) {
+        if (!cmEditor) return;
+        const cursor = cmEditor.getCursor();
+        const line = cmEditor.getLine(cursor.line);
+        cmEditor.replaceRange(prefix + line, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: line.length });
+        cmEditor.focus();
+    }
+
+    function insertTemplate(text) {
+        if (!cmEditor) return;
+        cmEditor.replaceSelection(text);
+        cmEditor.focus();
+    }
+
+    // Split gutter drag
+    (function setupSplitGutter() {
+        let isDragging = false, startX = 0, startW = 0;
+        splitGutter.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startW = editorPane.getBoundingClientRect().width;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const totalW = splitLayout.getBoundingClientRect().width;
+            const newW = Math.max(200, Math.min(totalW - 300, startW + dx));
+            editorPane.style.width = newW + 'px';
+            editorPane.style.flex = 'none';
+            if (cmEditor) cmEditor.refresh();
+        });
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+    })();
+
+    // ========================
+    //  Save (Ctrl+S)
+    // ========================
+    async function saveCurrentFile() {
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (!tab) return;
+        if (!isEditMode) return;
+
+        setSaveStatus('saving');
+        try {
+            const res = await fetch('/api/file/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: tab.path, content: tab.content }),
+            });
+            const data = await res.json();
+            if (data.error) {
+                setSaveStatus('');
+                alert('儲存失敗: ' + data.error);
+                return;
+            }
+            tab.isDirty = false;
+            tab.modifiedTime = data.modifiedTime;
+            tab.wordCount = data.wordCount;
+            tab.lineCount = data.lineCount;
+            updateStatusBar(tab);
+            setSaveStatus('saved');
+        } catch (err) {
+            setSaveStatus('');
+            alert('儲存失敗: ' + err.message);
+        }
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            saveCurrentFile();
+        }
+    });
+
+    // ========================
+    //  WebSocket 即時監控
+    // ========================
+    const fileNotification = $('#fileNotification');
+    const fileNotificationMsg = $('#fileNotificationMsg');
+    const fileNotificationReload = $('#fileNotificationReload');
+    const fileNotificationClose = $('#fileNotificationClose');
+    const statusWsIndicator = $('#statusWsIndicator');
+
+    let wsConn = null;
+    let wsReconnectTimer = null;
+    let pendingReloadPath = null;
+
+    function connectWebSocket() {
+        if (wsConn && wsConn.readyState < 2) return;
+        const wsUrl = `ws://${window.location.host}/ws`;
+        try {
+            wsConn = new WebSocket(wsUrl);
+        } catch (e) {
+            return;
+        }
+
+        wsConn.onopen = () => {
+            if (statusWsIndicator) {
+                statusWsIndicator.style.display = '';
+                statusWsIndicator.querySelector('.ws-dot').classList.add('connected');
+            }
+            // Ping to keep alive
+            wsConn._pingInterval = setInterval(() => {
+                if (wsConn.readyState === 1) wsConn.send('ping');
+            }, 20000);
+        };
+
+        wsConn.onmessage = (e) => {
+            if (e.data === 'pong') return;
+            try {
+                const msg = JSON.parse(e.data);
+                handleWsEvent(msg);
+            } catch (ex) { /* ignore */ }
+        };
+
+        wsConn.onclose = () => {
+            if (statusWsIndicator) {
+                statusWsIndicator.querySelector('.ws-dot').classList.remove('connected');
+            }
+            clearInterval(wsConn._pingInterval);
+            wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+        };
+
+        wsConn.onerror = () => {
+            wsConn.close();
+        };
+    }
+
+    function handleWsEvent(msg) {
+        const { event, path } = msg;
+
+        if (event === 'changed') {
+            // Check if changed file is currently open
+            const tab = tabs.find(t => t.path === path);
+            if (tab) {
+                pendingReloadPath = path;
+                fileNotificationMsg.textContent = `檔案已在外部變更：${tab.name}`;
+                fileNotification.style.display = '';
+            }
+        } else if (event === 'created' || event === 'deleted') {
+            // Refresh file tree silently
+            if (currentRoot) {
+                fetch(`/api/tree?root=${encodeURIComponent(currentRoot)}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.tree) {
+                            fileTree.innerHTML = '';
+                            renderTreeNodes(data.tree, fileTree, 0);
+                        }
+                    }).catch(() => {});
+            }
+        }
+    }
+
+    fileNotificationReload.addEventListener('click', async () => {
+        fileNotification.style.display = 'none';
+        if (!pendingReloadPath) return;
+        const path = pendingReloadPath;
+        pendingReloadPath = null;
+        const tab = tabs.find(t => t.path === path);
+        if (!tab) return;
+        try {
+            const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+            const data = await res.json();
+            if (data.error) { alert(data.error); return; }
+            tab.content = data.content;
+            tab.wordCount = data.wordCount;
+            tab.lineCount = data.lineCount;
+            tab.modifiedTime = data.modifiedTime;
+            if (tab.id === activeTabId) {
+                renderMarkdown(tab.content);
+                updateStatusBar(tab);
+                if (isEditMode && cmEditor) loadEditorContent(tab.content);
+            }
+        } catch (err) {
+            alert('重新載入失敗: ' + err.message);
+        }
+    });
+
+    fileNotificationClose.addEventListener('click', () => {
+        fileNotification.style.display = 'none';
+        pendingReloadPath = null;
+    });
+
+    // ========================
+    //  匯出功能
+    // ========================
+    const exportBtn = $('#exportBtn');
+    const exportPanel = $('#exportPanel');
+    const exportHtmlBtn = $('#exportHtmlBtn');
+    const exportDocxBtn = $('#exportDocxBtn');
+
+    // 匯出下拉選單切換
+    exportBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isVisible = exportPanel.style.display !== 'none';
+        exportPanel.style.display = isVisible ? 'none' : '';
+        if (!isVisible) {
+            const rect = exportBtn.getBoundingClientRect();
+            exportPanel.style.top = rect.bottom + 4 + 'px';
+            exportPanel.style.right = (window.innerWidth - rect.right) + 'px';
+        }
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!exportPanel.contains(e.target) && e.target !== exportBtn) {
+            exportPanel.style.display = 'none';
+        }
+    });
+
+    // 匯出 PDF（現有功能，移到下拉選單內）
+    exportPdfBtn.addEventListener('click', async () => {
+        exportPanel.style.display = 'none';
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (!tab) { alert('請先開啟一個檔案'); return; }
+
+        exportPdfBtn.disabled = true;
+        exportPdfBtn.style.opacity = '0.5';
+        try {
+            const element = markdownBody.cloneNode(true);
+            element.style.display = 'block';
+            element.style.padding = '20px';
+            element.style.maxWidth = '800px';
+            const pdfStyle = document.createElement('style');
+            pdfStyle.textContent = `
+                * { color: #1f2328 !important; }
+                h1, h2, h3, h4, h5, h6 { color: #1f2328 !important; border-color: #d0d7de !important; }
+                a { color: #0969da !important; }
+                code { color: #1f2328 !important; background: #f6f8fa !important; }
+                pre { background: #f6f8fa !important; border-color: #d0d7de !important; }
+                pre code { color: #1f2328 !important; background: #f6f8fa !important; }
+                blockquote { color: #656d76 !important; background: #f6f8fa !important; border-color: #0969da !important; }
+                table, th, td { border-color: #d0d7de !important; }
+                th { background: #f6f8fa !important; color: #1f2328 !important; }
+                tr:nth-child(even) { background: #f6f8fa !important; }
+                .code-lang-label { color: #656d76 !important; background: #e8ecf0 !important; border-color: #d0d7de !important; }
+                .copy-code-btn { display: none !important; }
+                .mermaid-block { background: #ffffff !important; border-color: #d0d7de !important; }
+                .hljs { background: #f6f8fa !important; color: #1f2328 !important; }
+                mark { background: rgba(255,213,79,0.4) !important; color: #1f2328 !important; }
+                strong { color: #1f2328 !important; }
+                hr { border-color: #d0d7de !important; }
+                h1,h2,h3,h4,h5,h6 { page-break-after: avoid !important; }
+                p, li, blockquote { page-break-inside: avoid !important; }
+                pre, .code-block-wrapper { page-break-inside: avoid !important; }
+                table, tr { page-break-inside: avoid !important; }
+                img { page-break-inside: avoid !important; }
+            `;
+            element.prepend(pdfStyle);
+            element.style.background = '#ffffff';
+            const fileName = tab.name.replace(/\.md$/i, '') + '.pdf';
+            const opt = {
+                margin: [10, 15, 10, 15],
+                filename: fileName,
+                image: { type: 'jpeg', quality: 0.95 },
+                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+            };
+            await html2pdf().set(opt).from(element).save();
+        } catch (err) {
+            alert('PDF 匯出失敗: ' + err.message);
+        } finally {
+            exportPdfBtn.disabled = false;
+            exportPdfBtn.style.opacity = '';
+        }
+    });
+
+    // 匯出 HTML
+    exportHtmlBtn.addEventListener('click', async () => {
+        exportPanel.style.display = 'none';
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (!tab) { alert('請先開啟一個檔案'); return; }
+
+        try {
+            const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+            const renderedHtml = markdownBody.innerHTML;
+            const cssHref = document.querySelector('link[href*="style.css"]')?.href || '';
+
+            // 內嵌 CSS 變數以確保獨立可用
+            const htmlContent = `<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="${theme}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(tab.name.replace(/\.md$/i, ''))}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/${theme === 'dark' ? 'github-dark' : 'github'}.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+${getInlineCSS()}
+</style>
+</head>
+<body style="margin:0;padding:24px 48px;max-width:900px;margin:0 auto;">
+<article class="markdown-body">
+${renderedHtml}
+</article>
+</body>
+</html>`;
+
+            const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = tab.name.replace(/\.md$/i, '') + '.html';
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            alert('HTML 匯出失敗: ' + err.message);
+        }
+    });
+
+    function getInlineCSS() {
+        // 基本 Markdown Body CSS 供獨立 HTML 使用
+        const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+        const isDark = theme === 'dark';
+        return `
+:root { --bg: ${isDark ? '#0d1117' : '#ffffff'}; --text: ${isDark ? '#e6edf3' : '#1f2328'};
+  --heading: ${isDark ? '#f0f6fc' : '#1f2328'}; --link: ${isDark ? '#58a6ff' : '#0969da'};
+  --code-bg: ${isDark ? '#1a1f2b' : '#f6f8fa'}; --border: ${isDark ? '#30363d' : '#d0d7de'};
+  --blockquote-bg: ${isDark ? '#1c2128' : '#f6f8fa'}; --blockquote-border: ${isDark ? '#3d444d' : '#d0d7de'};
+  --table-stripe: ${isDark ? '#161b22' : '#f6f8fa'};
+}
+body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }
+.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4,.markdown-body h5,.markdown-body h6 {
+  color: var(--heading); margin-top: 1.5em; margin-bottom: .5em; font-weight: 600; }
+.markdown-body h1 { font-size: 2em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+.markdown-body h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+.markdown-body a { color: var(--link); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body code { font-family: 'JetBrains Mono', monospace; background: var(--code-bg);
+  padding: .2em .4em; border-radius: 4px; font-size: .9em; }
+.markdown-body pre { background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 16px; overflow-x: auto; }
+.markdown-body pre code { background: none; padding: 0; }
+.markdown-body blockquote { border-left: 4px solid var(--blockquote-border);
+  background: var(--blockquote-bg); margin: 0; padding: .5em 1em; border-radius: 0 6px 6px 0; }
+.markdown-body table { border-collapse: collapse; width: 100%; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 8px 12px; }
+.markdown-body tr:nth-child(even) { background: var(--table-stripe); }
+.markdown-body img { max-width: 100%; }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); }
+.copy-code-btn, .code-lang-label { display: none; }
+`;
+    }
+
+    // 匯出 DOCX
+    exportDocxBtn.addEventListener('click', async () => {
+        exportPanel.style.display = 'none';
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (!tab) { alert('請先開啟一個檔案'); return; }
+
+        exportDocxBtn.disabled = true;
+        try {
+            const url = `/api/export/docx?path=${encodeURIComponent(tab.path)}`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                const err = await res.json();
+                alert('DOCX 匯出失敗: ' + (err.error || res.statusText));
+                return;
+            }
+            const blob = await res.blob();
+            const dlUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = dlUrl;
+            a.download = tab.name.replace(/\.md$/i, '') + '.docx';
+            a.click();
+            URL.revokeObjectURL(dlUrl);
+        } catch (err) {
+            alert('DOCX 匯出失敗: ' + err.message);
+        } finally {
+            exportDocxBtn.disabled = false;
+        }
+    });
+
+    // ========================
+    //  搜尋索引
+    // ========================
+    const rebuildIndexBtn = $('#rebuildIndexBtn');
+    const indexStatus = $('#indexStatus');
+
+    rebuildIndexBtn.addEventListener('click', async () => {
+        if (!currentRoot) { alert('請先開啟資料夾'); return; }
+        rebuildIndexBtn.disabled = true;
+        rebuildIndexBtn.textContent = '建立中…';
+        indexStatus.style.display = '';
+        indexStatus.textContent = '正在建立全文索引，請稍候…';
+        indexStatus.className = 'index-status building';
+        try {
+            const res = await fetch('/api/index/rebuild', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ root: currentRoot }),
+            });
+            const data = await res.json();
+            if (data.error) {
+                indexStatus.textContent = '索引建立失敗: ' + data.error;
+                indexStatus.className = 'index-status error';
+            } else {
+                indexStatus.textContent = `⚡ 索引建立完成：共 ${data.count} 個檔案，下次搜尋將使用快速索引`;
+                indexStatus.className = 'index-status success';
+            }
+        } catch (err) {
+            indexStatus.textContent = '索引建立失敗: ' + err.message;
+            indexStatus.className = 'index-status error';
+        } finally {
+            rebuildIndexBtn.disabled = false;
+            rebuildIndexBtn.textContent = '⚡ 建立索引';
+        }
+    });
+
+    // ========================
+    //  Edit mode button 可見性 (由各操作點呼叫)
+    // ========================
+    function updateEditModeBtn() {
+        const hasTab = tabs.length > 0 && activeTabId;
+        editModeBtn.style.display = hasTab ? '' : 'none';
+        if (!hasTab && isEditMode) exitEditMode();
+    }
+
     init();
+
+    // Post-init: connect WebSocket
+    connectWebSocket();
 
 })();
