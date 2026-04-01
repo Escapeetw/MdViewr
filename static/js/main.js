@@ -2142,6 +2142,10 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); c
         })
         .then(r => r.json())
         .then(data => {
+            if (data.error === 'NO_API_KEY') {
+                showAiState('error', '尚未設定 Anthropic API Key。\n請點右下方「設定 API Key」按鈕輸入金鑰。', true);
+                return;
+            }
             if (data.error) { showAiState('error', data.error); return; }
             document.getElementById('aiSummaryInput').value = data.summary || '';
             aiCurrentTags = Array.isArray(data.tags) ? [...data.tags] : [];
@@ -2151,13 +2155,29 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); c
         .catch(err => showAiState('error', err.message));
     }
 
-    function showAiState(state, msg) {
+    function showAiState(state, msg, showKeyBtn) {
         document.getElementById('aiLoadingState').style.display = state === 'loading' ? '' : 'none';
         document.getElementById('aiErrorState').style.display = state === 'error' ? '' : 'none';
         document.getElementById('aiResultState').style.display = state === 'result' ? '' : 'none';
         document.getElementById('aiModalFooter').style.display = state === 'result' ? '' : 'none';
         if (state === 'error') {
-            document.getElementById('aiErrorMsg').textContent = msg || '發生錯誤';
+            const errEl = document.getElementById('aiErrorMsg');
+            errEl.textContent = msg || '發生錯誤';
+            // Add API key shortcut button if needed
+            const existing = errEl.nextSibling;
+            if (existing && existing.id === 'aiKeyShortcut') existing.remove();
+            if (showKeyBtn) {
+                const btn = document.createElement('button');
+                btn.id = 'aiKeyShortcut';
+                btn.className = 'btn btn-primary';
+                btn.style.cssText = 'margin-top:12px;width:100%';
+                btn.textContent = '🔑 設定 API Key';
+                btn.onclick = () => {
+                    document.getElementById('aiAnalyzeModal').style.display = 'none';
+                    openApiKeyModal();
+                };
+                errEl.after(btn);
+            }
         }
     }
 
@@ -2237,5 +2257,61 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); c
 
     // Expose openAiModal globally (called from frontmatter bar button)
     window.openAiModal = openAiModal;
+
+    // ========================
+    //  API Key Settings Modal
+    // ========================
+    function openApiKeyModal() {
+        const modal = document.getElementById('apiKeyModal');
+        if (!modal) return;
+        // Load current masked key hint
+        fetch('/api/settings')
+            .then(r => r.json())
+            .then(data => {
+                const input = document.getElementById('apiKeyInput');
+                if (input) {
+                    input.placeholder = data.has_key ? '已設定（輸入新金鑰以覆蓋）' : 'sk-ant-api03-…';
+                    input.value = '';
+                }
+            })
+            .catch(() => {});
+        const status = document.getElementById('apiKeySaveStatus');
+        if (status) { status.textContent = ''; status.style.display = 'none'; }
+        modal.style.display = 'flex';
+    }
+    window.openApiKeyModal = openApiKeyModal;
+
+    document.getElementById('aiSettingsBtn')?.addEventListener('click', openApiKeyModal);
+    document.getElementById('closeApiKeyModal')?.addEventListener('click', () => {
+        document.getElementById('apiKeyModal').style.display = 'none';
+    });
+    document.getElementById('cancelApiKeyBtn')?.addEventListener('click', () => {
+        document.getElementById('apiKeyModal').style.display = 'none';
+    });
+    document.getElementById('apiKeyModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('apiKeyModal'))
+            document.getElementById('apiKeyModal').style.display = 'none';
+    });
+
+    document.getElementById('saveApiKeyBtn')?.addEventListener('click', () => {
+        const input = document.getElementById('apiKeyInput');
+        const key = input ? input.value.trim() : '';
+        const status = document.getElementById('apiKeySaveStatus');
+        if (!key) { if (status) { status.textContent = '請輸入 API Key'; status.style.display = ''; } return; }
+
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ anthropic_api_key: key })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (status) { status.textContent = '✅ 已儲存'; status.style.display = ''; }
+                setTimeout(() => { document.getElementById('apiKeyModal').style.display = 'none'; }, 800);
+            }
+        })
+        .catch(err => { if (status) { status.textContent = '儲存失敗: ' + err.message; status.style.display = ''; } });
+    });
 
 })();

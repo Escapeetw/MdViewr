@@ -787,6 +787,47 @@ def api_bookmarks_patch(bm_id):
         return jsonify({'error': str(e)}), 500
 
 
+# === 本機設定檔 (config.json，不納入版控) ===
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
+
+def _load_config():
+    try:
+        with open(_CONFIG_PATH, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_config(data):
+    cfg = _load_config()
+    cfg.update(data)
+    with open(_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+def _get_api_key():
+    """優先順序: 環境變數 → config.json"""
+    return os.environ.get('ANTHROPIC_API_KEY', '') or _load_config().get('anthropic_api_key', '')
+
+
+@app.route('/api/settings', methods=['GET'])
+def api_settings_get():
+    cfg = _load_config()
+    key = _get_api_key()
+    return jsonify({
+        'anthropic_api_key': ('*' * 8 + key[-4:]) if len(key) > 4 else ('已設定' if key else ''),
+        'has_key': bool(key)
+    })
+
+
+@app.route('/api/settings', methods=['POST'])
+def api_settings_post():
+    data = request.get_json() or {}
+    updates = {}
+    if 'anthropic_api_key' in data:
+        updates['anthropic_api_key'] = data['anthropic_api_key']
+    _save_config(updates)
+    return jsonify({'success': True})
+
+
 # === AI 分析 ===
 try:
     import anthropic as _anthropic
@@ -800,9 +841,9 @@ def api_ai_analyze():
     """呼叫 Claude 為文件產生摘要與建議標籤"""
     if not ANTHROPIC_OK:
         return jsonify({'error': 'anthropic 套件未安裝'}), 500
-    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    api_key = _get_api_key()
     if not api_key:
-        return jsonify({'error': '請設定 ANTHROPIC_API_KEY 環境變數'}), 500
+        return jsonify({'error': 'NO_API_KEY'}), 400
 
     data = request.get_json() or {}
     path = data.get('path', '')
