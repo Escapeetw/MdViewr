@@ -402,6 +402,45 @@
         <div class="frontmatter-bar" id="frontmatterBar"></div>
     </template>
 
+    <!-- AI 分析 Modal -->
+    <div class="modal-overlay" id="aiAnalyzeModal" style="display:none">
+        <div class="modal ai-modal">
+            <div class="modal-header">
+                <h3>✨ AI 文件分析</h3>
+                <button class="btn-icon btn-small" id="closeAiModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <!-- Loading state -->
+                <div id="aiLoadingState" style="display:none">
+                    <div class="ai-loading">
+                        <div class="ai-spinner"></div>
+                        <span>AI 分析中，請稍候…</span>
+                    </div>
+                </div>
+                <!-- Error state -->
+                <div id="aiErrorState" style="display:none">
+                    <div class="ai-error" id="aiErrorMsg"></div>
+                </div>
+                <!-- Result state -->
+                <div id="aiResultState" style="display:none">
+                    <div class="ai-field">
+                        <label>摘要</label>
+                        <textarea id="aiSummaryInput" rows="5" placeholder="AI 產生的摘要…"></textarea>
+                    </div>
+                    <div class="ai-field">
+                        <label>標籤 <span class="ai-hint">（逗號分隔，可直接編輯）</span></label>
+                        <div class="ai-tags-editor" id="aiTagsEditor"></div>
+                        <input type="text" id="aiTagInput" placeholder="輸入標籤後按 Enter 新增…" autocomplete="off">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" id="aiModalFooter" style="display:none">
+                <button class="btn" id="aiCancelBtn">取消</button>
+                <button class="btn btn-primary" id="aiSaveBtn">✅ 儲存到文件</button>
+            </div>
+        </div>
+    </div>
+
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
 

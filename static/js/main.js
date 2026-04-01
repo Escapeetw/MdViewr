@@ -1719,14 +1719,27 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); c
             const previewContainer = document.getElementById('previewContainer');
             if (previewContainer) previewContainer.insertBefore(bar, previewContainer.firstChild);
         }
-        if (!fm || Object.keys(fm).length === 0) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+        if (!fm || Object.keys(fm).length === 0) {
+            // Still show AI button even without frontmatter
+            const tabEmpty = tabs.find(t => t.id === activeTabId);
+            if (tabEmpty) {
+                bar.style.display = '';
+                bar.innerHTML = `<button class="fm-ai-btn" onclick="openAiModal('${tabEmpty.path.replace(/'/g, "\\'")}')">✨ AI 分析</button>`;
+            } else {
+                bar.innerHTML = '';
+                bar.style.display = 'none';
+            }
+            return;
+        }
         bar.style.display = '';
         const tags = fm.tags || [];
         const title = fm.title ? `<span class="fm-title">${fm.title}</span>` : '';
         const tagsHtml = tags.map(t => `<span class="fm-tag" onclick="showTagFilesFromBar('${t}')">#${t}</span>`).join('');
         const extra = Object.entries(fm).filter(([k]) => !['title','tags'].includes(k))
             .map(([k,v]) => `<span class="fm-meta"><b>${k}:</b> ${v}</span>`).join('');
-        bar.innerHTML = title + tagsHtml + extra;
+        const tab = tabs.find(t => t.id === activeTabId);
+        const aiBtn = tab ? `<button class="fm-ai-btn" onclick="openAiModal('${tab.path.replace(/'/g, "\\'")}')">✨ AI 分析</button>` : '';
+        bar.innerHTML = title + tagsHtml + extra + aiBtn;
     }
     window.showTagFilesFromBar = function(tag) {
         const leftTab = document.querySelector('.sidebar-tab[data-view="tags"]');
@@ -2081,5 +2094,148 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); c
 
     // Initial file list refresh
     setTimeout(refreshAllFiles, 500);
+
+    // ========================
+    //  Fix: tagsRebuildBtn → delegate to rebuildIndexBtn
+    // ========================
+    const tagsRebuildBtn = document.getElementById('tagsRebuildBtn');
+    if (tagsRebuildBtn) {
+        tagsRebuildBtn.addEventListener('click', () => {
+            const rebuildBtn = document.getElementById('rebuildIndexBtn');
+            if (rebuildBtn) {
+                rebuildBtn.click();
+                // After rebuild, reload tags view
+                rebuildBtn.addEventListener('click', () => {
+                    setTimeout(loadTagsView, 2000);
+                }, { once: true });
+            }
+        });
+    }
+
+    // Also reload tags view after main rebuild completes
+    const _mainRebuildBtn = document.getElementById('rebuildIndexBtn');
+    if (_mainRebuildBtn) {
+        _mainRebuildBtn.addEventListener('click', () => {
+            setTimeout(() => {
+                const tagsView = document.getElementById('tagsView');
+                if (tagsView && tagsView.style.display !== 'none') loadTagsView();
+            }, 3000);
+        });
+    }
+
+    // ========================
+    //  AI 文件分析
+    // ========================
+    let aiCurrentTags = [];
+
+    function openAiModal(path) {
+        const modal = document.getElementById('aiAnalyzeModal');
+        if (!modal) return;
+        modal.style.display = 'flex';
+        modal.dataset.path = path;
+        showAiState('loading');
+
+        fetch('/api/ai/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { showAiState('error', data.error); return; }
+            document.getElementById('aiSummaryInput').value = data.summary || '';
+            aiCurrentTags = Array.isArray(data.tags) ? [...data.tags] : [];
+            renderAiTags();
+            showAiState('result');
+        })
+        .catch(err => showAiState('error', err.message));
+    }
+
+    function showAiState(state, msg) {
+        document.getElementById('aiLoadingState').style.display = state === 'loading' ? '' : 'none';
+        document.getElementById('aiErrorState').style.display = state === 'error' ? '' : 'none';
+        document.getElementById('aiResultState').style.display = state === 'result' ? '' : 'none';
+        document.getElementById('aiModalFooter').style.display = state === 'result' ? '' : 'none';
+        if (state === 'error') {
+            document.getElementById('aiErrorMsg').textContent = msg || '發生錯誤';
+        }
+    }
+
+    function renderAiTags() {
+        const editor = document.getElementById('aiTagsEditor');
+        if (!editor) return;
+        editor.innerHTML = aiCurrentTags.map((t, i) =>
+            `<span class="ai-tag-chip">#${t}<button onclick="removeAiTag(${i})" title="移除">✕</button></span>`
+        ).join('');
+    }
+
+    window.removeAiTag = function(i) {
+        aiCurrentTags.splice(i, 1);
+        renderAiTags();
+    };
+
+    const aiTagInput = document.getElementById('aiTagInput');
+    if (aiTagInput) {
+        aiTagInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                const val = aiTagInput.value.trim().replace(/^#/, '').replace(/,/g, '');
+                if (val && !aiCurrentTags.includes(val)) {
+                    aiCurrentTags.push(val);
+                    renderAiTags();
+                }
+                aiTagInput.value = '';
+            }
+        });
+    }
+
+    document.getElementById('closeAiModal')?.addEventListener('click', () => {
+        document.getElementById('aiAnalyzeModal').style.display = 'none';
+    });
+    document.getElementById('aiCancelBtn')?.addEventListener('click', () => {
+        document.getElementById('aiAnalyzeModal').style.display = 'none';
+    });
+    document.getElementById('aiAnalyzeModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('aiAnalyzeModal'))
+            document.getElementById('aiAnalyzeModal').style.display = 'none';
+    });
+
+    document.getElementById('aiSaveBtn')?.addEventListener('click', () => {
+        const modal = document.getElementById('aiAnalyzeModal');
+        const path = modal.dataset.path;
+        const summary = document.getElementById('aiSummaryInput').value.trim();
+        const tags = aiCurrentTags;
+
+        fetch('/api/frontmatter/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path, summary, tags })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { alert('儲存失敗: ' + data.error); return; }
+            modal.style.display = 'none';
+            // Reload the current file to show updated frontmatter
+            const tab = tabs.find(t => t.id === activeTabId);
+            if (tab && tab.path === path) {
+                // Re-fetch the file
+                fetch('/api/file?path=' + encodeURIComponent(path))
+                    .then(r => r.json())
+                    .then(d => {
+                        tab.content = d.content;
+                        tab.frontmatter = d.frontmatter || {};
+                        renderMarkdown(tab.content);
+                        renderFrontmatterBar(tab.frontmatter);
+                    });
+            }
+            // Reload tags view if visible
+            const tagsViewEl = document.getElementById('tagsView');
+            if (tagsViewEl && tagsViewEl.style.display !== 'none') loadTagsView();
+        })
+        .catch(err => alert('儲存失敗: ' + err.message));
+    });
+
+    // Expose openAiModal globally (called from frontmatter bar button)
+    window.openAiModal = openAiModal;
 
 })();

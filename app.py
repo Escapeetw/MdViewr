@@ -787,5 +787,128 @@ def api_bookmarks_patch(bm_id):
         return jsonify({'error': str(e)}), 500
 
 
+# === AI 分析 ===
+try:
+    import anthropic as _anthropic
+    ANTHROPIC_OK = True
+except ImportError:
+    ANTHROPIC_OK = False
+
+
+@app.route('/api/ai/analyze', methods=['POST'])
+def api_ai_analyze():
+    """呼叫 Claude 為文件產生摘要與建議標籤"""
+    if not ANTHROPIC_OK:
+        return jsonify({'error': 'anthropic 套件未安裝'}), 500
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        return jsonify({'error': '請設定 ANTHROPIC_API_KEY 環境變數'}), 500
+
+    data = request.get_json() or {}
+    path = data.get('path', '')
+    if not path or not os.path.isfile(path):
+        return jsonify({'error': '檔案不存在'}), 400
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            raw = f.read()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    fm, content = parse_frontmatter(raw)
+    # 限制長度避免超過 token
+    excerpt = content[:4000]
+
+    client = _anthropic.Anthropic(api_key=api_key)
+    prompt = f"""請分析以下 Markdown 文件，並以 JSON 格式回傳結果。
+
+文件內容：
+{excerpt}
+
+請回傳以下 JSON（不要加 markdown code block）：
+{{
+  "summary": "50~150 字的繁體中文摘要",
+  "tags": ["標籤1", "標籤2", "標籤3"]
+}}
+
+標籤要求：
+- 3~6 個，繁體中文或英文小寫
+- 反映文件的主題、技術、領域
+- 不含空格（用連字號）"""
+
+    try:
+        resp = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=512,
+            messages=[{'role': 'user', 'content': prompt}]
+        )
+        text = resp.content[0].text.strip()
+        # 嘗試解析 JSON
+        result = json.loads(text)
+        return jsonify({
+            'summary': result.get('summary', ''),
+            'tags': result.get('tags', []),
+            'existing_fm': fm
+        })
+    except json.JSONDecodeError:
+        # fallback: 從文字中提取
+        return jsonify({'summary': text, 'tags': [], 'existing_fm': fm})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/frontmatter/save', methods=['POST'])
+def api_frontmatter_save():
+    """將摘要與標籤寫入（或更新）檔案的 frontmatter"""
+    data = request.get_json() or {}
+    path = data.get('path', '')
+    summary = data.get('summary', '')
+    tags = data.get('tags', [])
+
+    if not path or not os.path.isfile(path):
+        return jsonify({'error': '檔案不存在'}), 400
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            raw = f.read()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    fm, content = parse_frontmatter(raw)
+
+    # 更新 frontmatter
+    if summary:
+        fm['summary'] = summary
+    if tags:
+        fm['tags'] = tags
+
+    # 重新序列化 frontmatter (簡單 YAML)
+    def _yaml_val(v):
+        if isinstance(v, list):
+            return '[' + ', '.join(v) + ']'
+        return str(v)
+
+    fm_lines = ['---']
+    for k, v in fm.items():
+        fm_lines.append(f'{k}: {_yaml_val(v)}')
+    fm_lines.append('---')
+    new_raw = '\n'.join(fm_lines) + '\n' + content
+
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(new_raw)
+        # 更新索引中的標籤
+        if tags:
+            conn = _init_index_db()
+            conn.execute('DELETE FROM file_tags WHERE path = ?', (path,))
+            name = os.path.basename(path)
+            for tag in tags:
+                conn.execute('INSERT OR IGNORE INTO file_tags (path, tag, name) VALUES (?, ?, ?)',
+                             (path, tag, name))
+            conn.commit()
+            conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=False, port=12017, threaded=True)
