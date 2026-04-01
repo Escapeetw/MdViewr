@@ -804,8 +804,9 @@ def _save_config(data):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 def _get_api_key():
-    """優先順序: 環境變數 → config.json"""
-    return os.environ.get('ANTHROPIC_API_KEY', '') or _load_config().get('anthropic_api_key', '')
+    """優先順序: config.json → 環境變數（避免被外部注入的 key 覆蓋）"""
+    return _load_config().get('anthropic_api_key', '') or os.environ.get('ANTHROPIC_API_KEY', '')
+
 
 
 @app.route('/api/settings', methods=['GET'])
@@ -856,43 +857,39 @@ def api_ai_analyze():
         return jsonify({'error': str(e)}), 500
 
     fm, content = parse_frontmatter(raw)
-    # 限制長度避免超過 token
     excerpt = content[:4000]
 
     client = _anthropic.Anthropic(api_key=api_key)
-    prompt = f"""請分析以下 Markdown 文件，並以 JSON 格式回傳結果。
 
-文件內容：
-{excerpt}
-
-請回傳以下 JSON（不要加 markdown code block）：
-{{
-  "summary": "50~150 字的繁體中文摘要",
-  "tags": ["標籤1", "標籤2", "標籤3"]
-}}
-
-標籤要求：
-- 3~6 個，繁體中文或英文小寫
-- 反映文件的主題、技術、領域
-- 不含空格（用連字號）"""
+    # Use JSON mode via system prompt + prefill to force clean JSON output
+    system = ('你是文件分析助理。只輸出 JSON，不加任何說明、不加 markdown code block。')
+    user_msg = (
+        '請分析以下 Markdown 文件，回傳 JSON：\n'
+        '{"summary":"50-150字繁體中文摘要","tags":["標籤1","標籤2"]}\n\n'
+        '標籤：3-6個，繁體中文或英文小寫，不含空格。\n\n'
+        '文件內容：\n' + excerpt
+    )
 
     try:
         resp = client.messages.create(
             model='claude-haiku-4-5-20251001',
-            max_tokens=512,
-            messages=[{'role': 'user', 'content': prompt}]
+            max_tokens=600,
+            system=system,
+            messages=[
+                {'role': 'user', 'content': user_msg},
+                {'role': 'assistant', 'content': '{'}   # prefill forces JSON start
+            ]
         )
-        text = resp.content[0].text.strip()
-        # 嘗試解析 JSON
-        result = json.loads(text)
-        return jsonify({
-            'summary': result.get('summary', ''),
-            'tags': result.get('tags', []),
-            'existing_fm': fm
-        })
-    except json.JSONDecodeError:
-        # fallback: 從文字中提取
-        return jsonify({'summary': text, 'tags': [], 'existing_fm': fm})
+        # Reassemble: prefill '{' + model continuation
+        raw_text = '{' + resp.content[0].text
+
+        # Strip any trailing code fence if present
+        raw_text = re.sub(r'```[\s\S]*$', '', raw_text).strip()
+
+        result = json.loads(raw_text)
+        summary = str(result.get('summary', ''))
+        tags = [str(t) for t in result.get('tags', []) if t]
+        return jsonify({'summary': summary, 'tags': tags})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
